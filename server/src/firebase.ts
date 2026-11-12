@@ -1,0 +1,219 @@
+// ============================================================
+// FIREBASE FIRESTORE & AUTH INITIALIZATION (SERVER)
+// ============================================================
+
+import { initializeApp as initializeClientApp, getApps as getClientApps } from 'firebase/app';
+import {
+  initializeFirestore as initializeClientFirestore,
+  setLogLevel,
+  doc,
+  setDoc,
+  getDoc,
+  getDocs,
+  deleteDoc,
+  collection as firestoreCollection,
+  type Firestore as ClientFirestore
+} from 'firebase/firestore';
+import { initializeApp as initializeAdminApp, getApps as getAdminApps, cert, type App } from 'firebase-admin/app';
+import { getFirestore as getAdminFirestore, Firestore as AdminFirestore } from 'firebase-admin/firestore';
+import { getAuth, Auth } from 'firebase-admin/auth';
+import { getMessaging, Messaging } from 'firebase-admin/messaging';
+import fs from 'fs';
+import path from 'path';
+
+// Suppress noisy client SDK connection logs on server
+try {
+  setLogLevel('silent');
+} catch {
+  // ignore
+}
+
+export interface FirebaseConfig {
+  projectId: string;
+  apiKey?: string;
+  authDomain?: string;
+  firestoreDatabaseId?: string;
+  storageBucket?: string;
+  clientEmail?: string;
+  privateKey?: string;
+}
+
+function loadConfig(): FirebaseConfig {
+  let config: Record<string, any> = {};
+
+  const possiblePaths = [
+    path.resolve(process.cwd(), 'firebase-applet-config.json'),
+    path.resolve(process.cwd(), '../firebase-applet-config.json'),
+    path.resolve(import.meta.dirname, '../../firebase-applet-config.json'),
+  ];
+
+  for (const p of possiblePaths) {
+    if (fs.existsSync(p)) {
+      try {
+        config = JSON.parse(fs.readFileSync(p, 'utf8'));
+        break;
+      } catch {
+        // ignore and continue
+      }
+    }
+  }
+
+  return {
+    projectId: process.env.FIREBASE_PROJECT_ID || config.projectId || 'gen-lang-client-0565045974',
+    apiKey: config.apiKey,
+    authDomain: config.authDomain,
+    firestoreDatabaseId: process.env.FIRESTORE_DATABASE_ID || config.firestoreDatabaseId,
+    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || config.storageBucket,
+    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+    privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+  };
+}
+
+export const firebaseConfig = loadConfig();
+
+let adminApp: App | null = null;
+let adminDbInstance: AdminFirestore | null = null;
+let adminAuthInstance: Auth | null = null;
+let adminMessagingInstance: Messaging | null = null;
+let clientDbInstance: ClientFirestore | null = null;
+let isConnected = false;
+
+// Initialize Admin App (Authoritative Server SDK)
+try {
+  if (getAdminApps().length === 0) {
+    if (firebaseConfig.clientEmail && firebaseConfig.privateKey) {
+      adminApp = initializeAdminApp({
+        credential: cert({
+          projectId: firebaseConfig.projectId,
+          clientEmail: firebaseConfig.clientEmail,
+          privateKey: firebaseConfig.privateKey,
+        }),
+        storageBucket: firebaseConfig.storageBucket,
+      });
+      console.log('🔥 Firebase Admin initialized with Service Account credentials');
+    } else {
+      adminApp = initializeAdminApp({
+        projectId: firebaseConfig.projectId,
+        storageBucket: firebaseConfig.storageBucket,
+      });
+      console.log(`🔥 Firebase Admin initialized with Project ID: ${firebaseConfig.projectId}`);
+    }
+  } else {
+    adminApp = getAdminApps()[0];
+  }
+
+  if (adminApp) {
+    adminAuthInstance = getAuth(adminApp);
+    adminDbInstance = firebaseConfig.firestoreDatabaseId
+      ? getAdminFirestore(adminApp, firebaseConfig.firestoreDatabaseId)
+      : getAdminFirestore(adminApp);
+    try {
+      adminMessagingInstance = getMessaging(adminApp);
+      console.log('🔥 Firebase Admin Messaging initialized');
+    } catch (mErr) {
+      console.warn('⚠️ Firebase Admin Messaging initialization notice:', mErr);
+    }
+  }
+} catch (err) {
+  console.warn('⚠️ Firebase Admin initialization notice:', err);
+}
+
+// Initialize Client Web SDK as secondary fallback with forced HTTP long polling
+try {
+  const clientApps = getClientApps();
+  const cApp = clientApps.length > 0 ? clientApps[0] : initializeClientApp({
+    apiKey: firebaseConfig.apiKey,
+    authDomain: firebaseConfig.authDomain,
+    projectId: firebaseConfig.projectId,
+    storageBucket: firebaseConfig.storageBucket,
+  });
+  clientDbInstance = initializeClientFirestore(
+    cApp,
+    { experimentalForceLongPolling: true },
+    firebaseConfig.firestoreDatabaseId || ''
+  );
+  isConnected = true;
+  console.log(`🔥 Client Firestore initialized for database: ${firebaseConfig.firestoreDatabaseId || 'default'}`);
+} catch (err) {
+  console.warn('⚠️ Client Firestore initialization notice:', err);
+}
+
+export const firestoreDb = {
+  async docSet(collectionPath: string, docId: string, data: any): Promise<void> {
+    const cleanData = JSON.parse(JSON.stringify(data));
+    try {
+      if (adminDbInstance) {
+        await adminDbInstance.collection(collectionPath).doc(docId).set(cleanData, { merge: true });
+      } else if (clientDbInstance) {
+        const docRef = doc(clientDbInstance, collectionPath, docId);
+        await setDoc(docRef, cleanData, { merge: true });
+      }
+    } catch (err) {
+      console.debug(`docSet notice for ${collectionPath}/${docId}:`, err instanceof Error ? err.message : err);
+    }
+  },
+
+  async docGet(collectionPath: string, docId: string): Promise<any | null> {
+    try {
+      if (adminDbInstance) {
+        const snap = await adminDbInstance.collection(collectionPath).doc(docId).get();
+        return snap.exists ? { id: snap.id, ...snap.data() } : null;
+      } else if (clientDbInstance) {
+        const docRef = doc(clientDbInstance, collectionPath, docId);
+        const snap = await getDoc(docRef);
+        return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+      }
+    } catch (err) {
+      console.debug(`docGet notice for ${collectionPath}/${docId}:`, err instanceof Error ? err.message : err);
+    }
+    return null;
+  },
+
+  async collectionGetAll(collectionPath: string): Promise<any[]> {
+    try {
+      if (adminDbInstance) {
+        const snap = await adminDbInstance.collection(collectionPath).get();
+        return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      } else if (clientDbInstance) {
+        const colRef = firestoreCollection(clientDbInstance, collectionPath);
+        const snap = await getDocs(colRef);
+        return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      }
+    } catch (err) {
+      console.debug(`collectionGetAll notice for ${collectionPath}:`, err instanceof Error ? err.message : err);
+    }
+    return [];
+  },
+
+  async queryByField(collectionPath: string, field: string, value: any): Promise<any[]> {
+    const all = await this.collectionGetAll(collectionPath);
+    return all.filter((item) => {
+      const targetVal = item[field];
+      if (typeof targetVal === 'string' && typeof value === 'string') {
+        return targetVal.toLowerCase() === value.toLowerCase();
+      }
+      return targetVal === value;
+    });
+  },
+
+  async docDelete(collectionPath: string, docId: string): Promise<void> {
+    try {
+      if (adminDbInstance) {
+        await adminDbInstance.collection(collectionPath).doc(docId).delete();
+      } else if (clientDbInstance) {
+        const docRef = doc(clientDbInstance, collectionPath, docId);
+        await deleteDoc(docRef);
+      }
+    } catch (err) {
+      console.debug(`docDelete notice for ${collectionPath}/${docId}:`, err instanceof Error ? err.message : err);
+    }
+  }
+};
+
+export {
+  adminApp,
+  adminAuthInstance as adminAuth,
+  adminDbInstance as adminDb,
+  adminMessagingInstance as adminMessaging,
+  isConnected as isFirebaseConfigured,
+};

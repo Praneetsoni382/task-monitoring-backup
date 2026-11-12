@@ -1,0 +1,230 @@
+// ============================================================
+// API CLIENT — Axios instance
+// ============================================================
+
+import axios from 'axios';
+import type { ApiResponse } from '../types';
+import { auth } from '../firebase';
+
+const api = axios.create({
+  baseURL: '/api',
+  withCredentials: true,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+// Request interceptor: ALWAYS attach the authoritative TaskFlow user token first
+api.interceptors.request.use(async (config) => {
+  const token = localStorage.getItem('auth_token');
+  if (token) {
+    if (typeof config.headers.set === 'function') {
+      config.headers.set('Authorization', `Bearer ${token}`);
+    } else {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  }
+
+  // Fallback to Firebase ID token only if no primary TaskFlow session token exists
+  if (auth.currentUser) {
+    try {
+      const firebaseToken = await auth.currentUser.getIdToken();
+      if (firebaseToken) {
+        if (typeof config.headers.set === 'function') {
+          config.headers.set('Authorization', `Bearer ${firebaseToken}`);
+        } else {
+          config.headers.Authorization = `Bearer ${firebaseToken}`;
+        }
+      }
+    } catch {
+      // Continue without token
+    }
+  }
+  return config;
+});
+
+// Response interceptor: unwrap data or safely handle session expiration without redirect loops
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      const requestUrl = error.config?.url || '';
+      const isAuthEndpoint = requestUrl.includes('/auth/login') || requestUrl.includes('/auth/me');
+
+      // Do NOT wipe storage or redirect if the 401 came from an initial session check or login attempt
+      if (!isAuthEndpoint) {
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('auth_user');
+        if (!window.location.pathname.includes('/login')) {
+          window.location.href = '/login';
+        }
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
+export default api;
+
+// ============================================================
+// API SERVICE FUNCTIONS
+// ============================================================
+
+// Auth
+export const authApi = {
+  login: (email: string, password: string) =>
+    api.post<ApiResponse>('/auth/login', { email, password }),
+  logout: () => api.post<ApiResponse>('/auth/logout'),
+  me: () => api.get<ApiResponse>('/auth/me'),
+  changePassword: (data: { currentPassword: string; newPassword: string }) =>
+    api.post<ApiResponse>('/auth/change-password', data),
+};
+
+// Employees
+export const employeeApi = {
+  getAll: (params?: Record<string, string>) =>
+    api.get<ApiResponse>('/employees', { params }),
+  getById: (id: string) => api.get<ApiResponse>(`/employees/${id}`),
+  create: (data: unknown) => api.post<ApiResponse>('/employees', data),
+  update: (id: string, data: unknown) => api.patch<ApiResponse>(`/employees/${id}`, data),
+  updateStatus: (id: string, active: boolean) =>
+    api.patch<ApiResponse>(`/employees/${id}/status`, { active }),
+  exportCsv: async () => {
+    const response = await api.get('/employees/export-csv', { responseType: 'blob' });
+    const url = window.URL.createObjectURL(new Blob([response.data]));
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', 'taskflow_employees_credentials.csv');
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  },
+};
+
+// Tasks
+export const taskApi = {
+  getAll: (params?: Record<string, string>) =>
+    api.get<ApiResponse>('/tasks', { params }),
+  getById: (id: string) => api.get<ApiResponse>(`/tasks/${id}`),
+  create: (data: unknown) => api.post<ApiResponse>('/tasks', data),
+  update: (id: string, data: unknown) => api.patch<ApiResponse>(`/tasks/${id}`, data),
+  cancel: (id: string) => api.post<ApiResponse>(`/tasks/${id}/cancel`),
+  getHistory: (id: string) => api.get<ApiResponse>(`/tasks/${id}/history`),
+  getMembers: (id: string) => api.get<ApiResponse>(`/tasks/${id}/members`),
+  updateMemberStatus: (taskId: string, memberId: string, status: string, explanation?: string) =>
+    api.patch<ApiResponse>(`/tasks/${taskId}/members/${memberId}/status`, { status, explanation }),
+  submitTask: (taskId: string, memberId: string, submissionNote?: string) =>
+    api.post<ApiResponse>(`/tasks/${taskId}/members/${memberId}/submit`, { submissionNote }),
+  approveMember: (taskId: string, memberId: string) =>
+    api.post<ApiResponse>(`/tasks/${taskId}/members/${memberId}/approve`),
+  requestRevision: (taskId: string, memberId: string, reason: string) =>
+    api.post<ApiResponse>(`/tasks/${taskId}/members/${memberId}/request-revision`, { reason }),
+};
+
+// Status Requests
+export const statusRequestApi = {
+  getAll: () => api.get<ApiResponse>('/status-requests'),
+  getPresets: () => api.get<ApiResponse>('/status-requests/presets'),
+  send: (taskId: string, data: unknown) =>
+    api.post<ApiResponse>(`/tasks/${taskId}/status-requests`, data),
+  respond: (requestId: string, responseText: string) =>
+    api.post<ApiResponse>(`/status-requests/${requestId}/respond`, { responseText }),
+};
+
+// Queries
+export const queryApi = {
+  getAll: (params?: Record<string, string>) =>
+    api.get<ApiResponse>('/queries', { params }),
+  getById: (id: string) => api.get<ApiResponse>(`/queries/${id}`),
+  getByTask: (taskId: string) => api.get<ApiResponse>(`/tasks/${taskId}/queries`),
+  create: (taskId: string, data: unknown) =>
+    api.post<ApiResponse>(`/tasks/${taskId}/queries`, data),
+  addMessage: (queryId: string, message: string) =>
+    api.post<ApiResponse>(`/queries/${queryId}/messages`, { message }),
+  updateStatus: (queryId: string, status: string) =>
+    api.patch<ApiResponse>(`/queries/${queryId}/status`, { status }),
+};
+
+// Chat
+export const chatApi = {
+  getMessages: (taskId: string) => api.get<ApiResponse>(`/tasks/${taskId}/messages`),
+  sendMessage: (taskId: string, message: string) =>
+    api.post<ApiResponse>(`/tasks/${taskId}/messages`, { message }),
+};
+
+// Notifications
+export const notificationApi = {
+  getAll: () => api.get<ApiResponse>('/notifications'),
+  markRead: (id: string) => api.patch<ApiResponse>(`/notifications/${id}/read`),
+  markAllRead: () => api.post<ApiResponse>('/notifications/read-all'),
+};
+
+// Dashboard
+export const dashboardApi = {
+  admin: () => api.get<ApiResponse>('/dashboard/admin'),
+  employee: () => api.get<ApiResponse>('/dashboard/employee'),
+};
+
+// Reports
+export const reportApi = {
+  getReport: (params?: Record<string, string>) =>
+    api.get<ApiResponse>('/reports', { params }),
+};
+
+// Reminders & IST Automated Scheduler
+export const reminderApi = {
+  preview: () => api.get<ApiResponse>('/reminders/preview'),
+  evaluate: () => api.post<ApiResponse>('/reminders/evaluate'),
+  getISTStatus: () => api.get<ApiResponse>('/reminders/ist-status'),
+  triggerIST: (data?: { slot?: string; forceAll?: boolean; taskId?: string }) =>
+    api.post<ApiResponse>('/reminders/trigger-ist', data),
+};
+
+// Push Notifications (FCM)
+export const pushApi = {
+  getConfig: () => api.get<ApiResponse>('/push/config'),
+  register: (data: {
+    deviceId: string;
+    fcmToken: string;
+    browserName?: string;
+    userAgent?: string;
+    permissionStatus?: string;
+  }) => api.post<ApiResponse>('/push/register', data),
+  getDevices: () => api.get<ApiResponse>('/push/devices'),
+  updateDevice: (deviceId: string, data: Record<string, unknown>) =>
+    api.patch<ApiResponse>(`/push/devices/${deviceId}`, data),
+  unregisterDevice: (deviceId: string) =>
+    api.delete<ApiResponse>(`/push/devices/${deviceId}`),
+  getPreferences: () => api.get<ApiResponse>('/push/preferences'),
+  updatePreferences: (data: Record<string, unknown>) =>
+    api.patch<ApiResponse>('/push/preferences', data),
+  sendTestPush: () => api.post<ApiResponse>('/push/test'),
+};
+
+// Google Meet & OAuth API
+export const meetingApi = {
+  getGoogleStatus: () => api.get<ApiResponse>('/admin/google/status'),
+  getAuthUrl: () => api.get<ApiResponse>('/admin/google/auth-url'),
+  connectManual: (data: { email?: string; accessToken?: string }) =>
+    api.post<ApiResponse>('/admin/google/connect-manual', data),
+  disconnectGoogle: () => api.post<ApiResponse>('/admin/google/disconnect'),
+  createMeeting: (
+    requestId: string,
+    data?: { accessToken?: string; meetingUri?: string; googleSpaceName?: string; meetingCode?: string }
+  ) => api.post<ApiResponse>(`/admin/status-requests/${requestId}/meetings`, data || {}),
+  scheduleMeeting: (
+    requestId: string,
+    data: { date: string; time: string; description?: string }
+  ) => api.post<ApiResponse>(`/admin/status-requests/${requestId}/meetings/schedule`, data),
+  rescheduleMeeting: (
+    requestId: string,
+    data: { date?: string; time?: string; description?: string }
+  ) => api.patch<ApiResponse>(`/admin/status-requests/${requestId}/meetings`, data),
+  cancelMeeting: (requestId: string) =>
+    api.post<ApiResponse>(`/admin/status-requests/${requestId}/meetings/cancel`),
+  getMeetingByRequest: (requestId: string) =>
+    api.get<ApiResponse>(`/status-requests/${requestId}/meeting`),
+};
+

@@ -1,0 +1,30 @@
+{
+  "name": "enterprise-task-management-platform",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Enterprise Task Management, Status Tracking & Employee Communication Platform",
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "scripts": {
+    "dev": "tsx server.ts",
+    "dev:server": "npm --prefix server run dev",
+    "dev:client": "npm --prefix client run dev",
+    "build": "npm --prefix server run build && npm --prefix client run build",
+    "start": "NODE_ENV=production node server.ts",
+    "lint": "npm --prefix client run lint",
+    "test": "node test-e2e.js"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.6",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^8.2.2",
+    "tsx": "^4.19.2",
+    "vite": "^6.1.0"
+  },
+  "dependencies": {
+    "firebase": "^13.1.0",
+    "firebase-admin": "^14.5.0"
+  }
+}
