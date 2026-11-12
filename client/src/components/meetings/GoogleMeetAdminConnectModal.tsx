@@ -55,30 +55,22 @@ export function GoogleMeetAdminConnectModal({ isOpen, onClose }: Props) {
     },
   });
 
-  // Single Main Action: Connect Google Account reliably across all environments
+  // Single Main Action: Connect Google Account via Google Identity Services
   const handleConnectGoogle = async () => {
     setConnectError('');
     setSuccessNotice('');
     setIsConnecting(true);
     try {
       const { getGoogleMeetAccessToken } = await import('../../services/googleMeet');
-      let authData = null;
-      try {
-        authData = await getGoogleMeetAccessToken(true);
-      } catch (e: any) {
-        console.info('Google authorization notice, establishing session connection:', e);
+      const authData = await getGoogleMeetAccessToken(true);
+      if (!authData?.accessToken) {
+        throw new Error('Google authorization was not completed. Please select your account.');
       }
 
-      const emailToUse = authData?.email || statusData?.connectedEmail || 'admin@company.com';
-      await meetingApi.connectManual({
-        email: emailToUse,
-        accessToken: authData?.accessToken,
-      });
-
       await queryClient.invalidateQueries({ queryKey: ['admin-google-status'] });
-      setSuccessNotice(`Connected to Google account (${emailToUse}) successfully!`);
+      setSuccessNotice(`Connected to Google account (${authData.email || 'Admin'}) successfully!`);
     } catch (err: any) {
-      console.error('Google connection error:', err);
+      console.warn('Google connection notice:', err);
       setConnectError(err?.message || 'Failed to connect Google account. Please try again.');
     } finally {
       setIsConnecting(false);
