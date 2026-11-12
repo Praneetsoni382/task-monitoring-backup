@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Video, CheckCircle2, AlertTriangle, Unlink, ExternalLink, Globe } from 'lucide-react';
+import { Video, CheckCircle2, AlertTriangle, Unlink, Globe } from 'lucide-react';
 import { Modal } from '../ui/Modal';
 import { Button } from '../ui/Button';
 import { meetingApi } from '../../services/api';
@@ -54,21 +54,7 @@ export function GoogleMeetAdminConnectModal({ isOpen, onClose }: Props) {
     },
   });
 
-  // Primary: Production-grade Redirect Mode (eliminates popups entirely)
-  const handleConnectRedirect = async () => {
-    setConnectError('');
-    setSuccessNotice('');
-    setIsConnecting(true);
-    try {
-      const { triggerGoogleMeetRedirect } = await import('../../services/googleMeet');
-      await triggerGoogleMeetRedirect();
-    } catch (err: any) {
-      setConnectError(err?.message || 'Redirect authorization failed');
-      setIsConnecting(false);
-    }
-  };
-
-  // Secondary: Popup Mode (for Preview / Local development)
+  // Primary: Client-Side GIS Authorization Popup
   const handleConnectPopup = async () => {
     setConnectError('');
     setSuccessNotice('');
@@ -86,11 +72,11 @@ export function GoogleMeetAdminConnectModal({ isOpen, onClose }: Props) {
       const errMsg = popupErr?.message || popupErr?.code || '';
       if (errMsg.includes('popup-closed-by-user') || popupErr?.code === 'auth/popup-closed-by-user') {
         setConnectError(
-          'Sign-in Popup Closed: The Google authorization popup window was closed before completing account selection. Please use "Authorize via Google (Redirect Mode)" below to sign in directly in the main browser window.'
+          'Sign-in Popup Notice: The authorization popup was closed before completing account selection. Please try "Redirect Mode" or "Quick Connect" below.'
         );
       } else if (errMsg.includes('popup-blocked') || popupErr?.code === 'auth/popup-blocked') {
         setConnectError(
-          'Popup Blocked: Your browser blocked the Google Sign-in popup. Please use "Authorize via Google (Redirect Mode)" below to sign in directly in the main browser window without popups.'
+          'Popup Blocked: Your browser blocked the popup. Please try "Redirect Mode" or "Quick Connect" below.'
         );
       } else {
         setConnectError(errMsg || 'Google authorization was cancelled or failed.');
@@ -100,7 +86,21 @@ export function GoogleMeetAdminConnectModal({ isOpen, onClose }: Props) {
     }
   };
 
-  // Instant Quick Connect (for zero-latency development & testing)
+  // Secondary: Production Redirect Mode (OAuth 2.0 Authorization Code Flow)
+  const handleConnectRedirect = async () => {
+    setConnectError('');
+    setSuccessNotice('');
+    setIsConnecting(true);
+    try {
+      const { triggerGoogleMeetRedirect } = await import('../../services/googleMeet');
+      await triggerGoogleMeetRedirect();
+    } catch (err: any) {
+      setConnectError(err?.message || 'Redirect authorization failed');
+      setIsConnecting(false);
+    }
+  };
+
+  // Tertiary: Instant Quick Connect (Zero-latency fallback)
   const handleQuickConnect = async () => {
     setConnectError('');
     setSuccessNotice('');
@@ -171,11 +171,20 @@ export function GoogleMeetAdminConnectModal({ isOpen, onClose }: Props) {
             <div className="flex items-center gap-2 shrink-0">
               <Button
                 size="sm"
-                onClick={handleConnectRedirect}
+                onClick={handleConnectPopup}
                 loading={isConnecting}
                 className="bg-[#3157A4] hover:bg-[#264482] text-xs font-bold"
               >
                 Connect with Google
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleQuickConnect}
+                loading={isConnecting}
+                className="text-xs text-[#3157A4] border-[#B8DDFB] hover:bg-[#EBF3FF]"
+              >
+                Quick Connect
               </Button>
             </div>
           )}
@@ -213,21 +222,20 @@ export function GoogleMeetAdminConnectModal({ isOpen, onClose }: Props) {
             <div className="flex flex-wrap items-center gap-2 pt-1">
               <Button
                 size="sm"
-                onClick={handleConnectRedirect}
+                onClick={handleConnectPopup}
                 loading={isConnecting}
                 className="bg-[#3157A4] hover:bg-[#264482] text-xs font-bold"
               >
-                <ExternalLink size={13} />
-                Authorize via Google (Redirect Mode — Recommended)
+                Authorize via Google (Popup)
               </Button>
               <Button
                 variant="outline"
                 size="sm"
-                onClick={handleConnectPopup}
+                onClick={handleConnectRedirect}
                 loading={isConnecting}
                 className="text-xs text-[#3157A4] border-[#B8DDFB] hover:bg-[#EBF3FF]"
               >
-                Popup Mode (Preview / Desktop)
+                Redirect Mode (Full Page)
               </Button>
               <Button
                 variant="outline"
@@ -236,7 +244,7 @@ export function GoogleMeetAdminConnectModal({ isOpen, onClose }: Props) {
                 loading={isConnecting}
                 className="text-xs text-[#3157A4] border-[#B8DDFB] hover:bg-[#EBF3FF]"
               >
-                Quick Connect (Instant Authorization)
+                Quick Connect
               </Button>
             </div>
           </div>
