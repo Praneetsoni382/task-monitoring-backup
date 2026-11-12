@@ -114,6 +114,38 @@ export async function triggerGoogleMeetRedirect(): Promise<void> {
 }
 
 /**
+ * Reliable Google Sign-In using Firebase Auth SDK GoogleAuthProvider.
+ * Solves cross-origin popup blocks and GIS library timing issues in hosted environments.
+ */
+export async function signInWithGoogleMeetFirebase(): Promise<{ accessToken: string; email: string }> {
+  const { GoogleAuthProvider, signInWithPopup } = await import('firebase/auth');
+  const { auth } = await import('../firebase');
+
+  const provider = new GoogleAuthProvider();
+  provider.addScope(MEET_SCOPE);
+  provider.addScope(EMAIL_SCOPE);
+  provider.setCustomParameters({ prompt: 'select_account' });
+
+  const result = await signInWithPopup(auth, provider);
+  const credential = GoogleAuthProvider.credentialFromResult(result);
+  const token = credential?.accessToken;
+  const email = result.user.email || '';
+
+  if (!token) {
+    throw new Error('Access token was not returned from Google authorization.');
+  }
+
+  setCachedGoogleToken(token, email);
+  try {
+    await meetingApi.connectManual({ email, accessToken: token });
+  } catch (syncErr) {
+    console.warn('Backend token sync notice:', syncErr);
+  }
+
+  return { accessToken: token, email };
+}
+
+/**
  * Google Meet access token authorization.
  * Supports cached tokens, backend verification, and single-trigger popup / redirect.
  */
@@ -150,6 +182,17 @@ export async function getGoogleMeetAccessToken(interactive = true): Promise<{
 
   try {
     isAuthorizing = true;
+
+    // Try Firebase Auth GoogleAuthProvider first (most reliable popup handling)
+    try {
+      const fbResult = await signInWithGoogleMeetFirebase();
+      if (fbResult?.accessToken) {
+        return fbResult;
+      }
+    } catch (fbErr: any) {
+      console.info('Firebase Auth Google Sign-in notice, attempting GIS fallback:', fbErr?.message || fbErr);
+    }
+
     const isGisLoaded = await loadGisScript();
 
     if (!isGisLoaded || !window.google?.accounts?.oauth2) {
@@ -215,7 +258,7 @@ export async function getGoogleMeetAccessToken(interactive = true): Promise<{
           resolved = true;
           reject(
             new Error(
-              'Sign-in Popup Notice: Popups were blocked or closed. Please use "Authorize via Google (Redirect Mode)" to sign in seamlessly without popups.'
+              'Sign-in Popup Notice: Popups were blocked or closed. Please use "Redirect Mode (Full Page)" or "Quick Connect" below to sign in without popups.'
             )
           );
         },
